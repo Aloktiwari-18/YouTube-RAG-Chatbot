@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -15,32 +15,22 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 # ---------------- ENV ---------------- #
 
 load_dotenv()
-
-GOOGLE_API_KEY = None
-
-try:
-    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-except:
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-if not GOOGLE_API_KEY:
-    st.error("Google API key not found. Add it in .env or Streamlit secrets.")
-    st.stop()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
 # ---------------- LLM ---------------- #
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
-    google_api_key=GOOGLE_API_KEY,
-    temperature=0.2
+    model="gemini-2.5-flash",
+    google_api_key=GOOGLE_API_KEY
 )
 
 
 # ---------------- Embeddings ---------------- #
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"}
 )
 
 
@@ -51,11 +41,13 @@ template="""
 You are a helpful assistant that answers questions about a YouTube video.
 
 Rules:
-- Use ONLY the context below
-- Reply in the SAME language style as the user
-- If user asks summary → give complete summary
-- Mention approximate timestamp if relevant
-- If code appears in the video explain it properly
+
+* Use ONLY the context below.
+* Reply in the SAME language style as the user.
+* If the user writes in English → reply in English.
+* If the user writes in Hinglish (Hindi words but English letters) → reply in Hinglish using English letters only.
+* DO NOT switch to Hindi script unless the user uses Hindi script.
+* If the user thanks you, politely say you are happy to help.
 
 Context:
 {context}
@@ -63,19 +55,15 @@ Context:
 Question:
 {question}
 
-Answer clearly.
+Give a clear answer.
 """,
 input_variables=["context","question"]
 )
 
 
-# ---------------- UI ---------------- #
+# ---------------- Streamlit ---------------- #
 
-st.set_page_config(
-    page_title="YouTube RAG Chatbot",
-    page_icon="▶",
-    layout="wide"
-)
+st.set_page_config(page_title="YouTube RAG Chatbot", page_icon="▶")
 
 st.title("🎥 YouTube RAG Chatbot")
 
@@ -85,22 +73,18 @@ st.title("🎥 YouTube RAG Chatbot")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-
 if "video_id" not in st.session_state:
     st.session_state.video_id = None
 
-if "chunks" not in st.session_state:
-    st.session_state.chunks = []
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
 
 
-# ---------------- Extract Video ID ---------------- #
+# ---------------- Extract ID ---------------- #
 
 def extract_youtube_id(url):
 
     pattern = r"(?:v=|youtu\.be/|embed/|shorts/)([^&?/]+)"
-
     match = re.search(pattern, url)
 
     return match.group(1) if match else None
@@ -120,57 +104,39 @@ with st.sidebar:
 
         if video_id:
 
-            try:
+            st.session_state.video_id = video_id
 
-                with st.spinner("Fetching transcript..."):
+            with st.spinner("Fetching transcript..."):
 
-                    try:
-                        transcript = YouTubeTranscriptApi.get_transcript(
-                            video_id,
-                            languages=["en", "hi"]
-                        )
+                api = YouTubeTranscriptApi()
 
-                        full_text = " ".join(
-                            chunk["text"] for chunk in transcript
-                        )
+                transcript = api.fetch(
+                    video_id,
+                    languages=['en','hi']
+                )
 
-                    except:
-                        api = YouTubeTranscriptApi()
-                        transcript = api.fetch(video_id)
+                text = " ".join(
+                    chunk.text for chunk in transcript.snippets
+                )
 
-                        full_text = " ".join(
-                            chunk.text for chunk in transcript.snippets
-                        )
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1500,
+                    chunk_overlap=300
+                )
 
-                    splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=1500,
-                        chunk_overlap=200
-                    )
+                docs = splitter.create_documents([text])
 
-                    docs = splitter.create_documents([full_text])
+                vector_store = FAISS.from_documents(
+                    docs,
+                    embeddings
+                )
 
-                    st.session_state.chunks = docs
+                st.session_state.vector_store = vector_store
 
-                    vector_store = FAISS.from_documents(
-                        docs,
-                        embeddings
-                    )
-
-                    st.session_state.vector_store = vector_store
-                    st.session_state.video_id = video_id
-
-                st.success("Video Loaded Successfully!")
-
-            except TranscriptsDisabled:
-                st.error("Captions disabled for this video.")
-
-            except NoTranscriptFound:
-                st.error("No transcript available.")
-
-            except Exception as e:
-                st.error(f"Transcript error: {str(e)}")
+            st.success("Video Loaded and Indexed!")
 
         else:
+
             st.error("Invalid URL")
 
     if st.session_state.video_id:
@@ -178,24 +144,6 @@ with st.sidebar:
         st.video(
             f"https://www.youtube.com/watch?v={st.session_state.video_id}"
         )
-
-    st.divider()
-
-    if st.button("📄 Video Summary"):
-
-        if st.session_state.vector_store:
-
-            st.session_state.messages.append(
-                {"role":"user","content":"Give complete summary of the video"}
-            )
-
-        else:
-            st.warning("Load a video first")
-
-    if st.button("🧹 Clear Chat"):
-
-        st.session_state.messages = []
-        st.rerun()
 
 
 # ---------------- Chat History ---------------- #
@@ -206,70 +154,52 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 
-# ---------------- Chat Input ---------------- #
+# ---------------- Chat ---------------- #
 
 question = st.chat_input("Ask something about the video")
 
 if question:
 
+    if st.session_state.vector_store is None:
+
+        st.error("Please load a video first.")
+        st.stop()
+
     st.session_state.messages.append(
         {"role":"user","content":question}
     )
 
+    with st.chat_message("user"):
+        st.markdown(question)
 
-# ---------------- AI Response ---------------- #
 
-if st.session_state.messages:
+    retriever = st.session_state.vector_store.as_retriever(
+        search_kwargs={"k":8}
+    )
 
-    last = st.session_state.messages[-1]
+    docs = retriever.invoke(question)
 
-    if last["role"] == "user":
+    context = "\n\n".join(
+        d.page_content for d in docs
+    )
 
-        if st.session_state.vector_store is None:
 
-            st.error("Please load a video first.")
+    final_prompt = prompt.invoke({
+        "context":context,
+        "question":question
+    })
 
-        else:
 
-            question = last["content"]
+    with st.chat_message("assistant"):
 
-            with st.chat_message("assistant"):
+        response = ""
+        placeholder = st.empty()
 
-                placeholder = st.empty()
+        for chunk in llm.stream(final_prompt):
 
-                response = ""
+            response += chunk.content
+            placeholder.markdown(response)
 
-                with st.spinner("AI thinking..."):
-
-                    retriever = st.session_state.vector_store.as_retriever(
-                        search_kwargs={"k":6}
-                    )
-
-                    docs = retriever.invoke(question)
-
-                    context = "\n\n".join(
-                        d.page_content for d in docs
-                    )
-
-                    final_prompt = prompt.invoke({
-                        "context":context,
-                        "question":question
-                    })
-
-                    try:
-
-                        for chunk in llm.stream(final_prompt):
-
-                            if chunk.content:
-
-                                response += chunk.content
-                                placeholder.markdown(response)
-
-                    except Exception as e:
-
-                        response = f"AI service unavailable: {str(e)}"
-                        placeholder.markdown(response)
-
-                st.session_state.messages.append(
-                    {"role":"assistant","content":response}
-                )
+    st.session_state.messages.append(
+        {"role":"assistant","content":response}
+    )
