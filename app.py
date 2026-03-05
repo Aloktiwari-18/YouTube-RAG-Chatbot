@@ -16,15 +16,22 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 
 load_dotenv()
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_API_KEY = None
+
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
-    st.error("Google API key not found. Add it in .env file.")
+    st.error("Google API key not found. Add it in .env or Streamlit secrets.")
     st.stop()
+
+
 # ---------------- LLM ---------------- #
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-2.5-pro",
     google_api_key=GOOGLE_API_KEY,
     temperature=0.2
 )
@@ -48,6 +55,7 @@ Rules:
 - Reply in the SAME language style as the user
 - If user asks summary → give complete summary
 - Mention approximate timestamp if relevant
+- If code appears in the video explain it properly
 
 Context:
 {context}
@@ -63,7 +71,11 @@ input_variables=["context","question"]
 
 # ---------------- UI ---------------- #
 
-st.set_page_config(page_title="YouTube RAG Chatbot", page_icon="▶", layout="wide")
+st.set_page_config(
+    page_title="YouTube RAG Chatbot",
+    page_icon="▶",
+    layout="wide"
+)
 
 st.title("🎥 YouTube RAG Chatbot")
 
@@ -112,13 +124,23 @@ with st.sidebar:
 
                 with st.spinner("Fetching transcript..."):
 
-                    api = YouTubeTranscriptApi()
+                    try:
+                        transcript = YouTubeTranscriptApi.get_transcript(
+                            video_id,
+                            languages=["en", "hi"]
+                        )
 
-                    transcript = api.fetch(video_id)
+                        full_text = " ".join(
+                            chunk["text"] for chunk in transcript
+                        )
 
-                    full_text = " ".join(
-                        chunk.text for chunk in transcript.snippets
-                    )
+                    except:
+                        api = YouTubeTranscriptApi()
+                        transcript = api.fetch(video_id)
+
+                        full_text = " ".join(
+                            chunk.text for chunk in transcript.snippets
+                        )
 
                     splitter = RecursiveCharacterTextSplitter(
                         chunk_size=1500,
@@ -145,8 +167,8 @@ with st.sidebar:
             except NoTranscriptFound:
                 st.error("No transcript available.")
 
-            except Exception:
-                st.error("Error loading transcript.")
+            except Exception as e:
+                st.error(f"Transcript error: {str(e)}")
 
         else:
             st.error("Invalid URL")
@@ -243,9 +265,9 @@ if st.session_state.messages:
                                 response += chunk.content
                                 placeholder.markdown(response)
 
-                    except Exception:
+                    except Exception as e:
 
-                        response = "AI service unavailable."
+                        response = f"AI service unavailable: {str(e)}"
                         placeholder.markdown(response)
 
                 st.session_state.messages.append(
