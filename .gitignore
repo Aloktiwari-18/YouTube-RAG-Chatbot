@@ -1,0 +1,30 @@
+# Python
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+
+venv/
+.env/
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Streamlit
+
+.streamlit/
+
+# OS
+
+.DS_Store
+Thumbs.db
+
+# Local RAG files
+
+chatbot_RAG_Ui.py
+chatbot_RAG.ipynb
+streamlitPractice.py
