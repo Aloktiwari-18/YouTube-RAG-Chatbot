@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -15,7 +15,12 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 # ---------------- ENV ---------------- #
 
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Works for both local + Streamlit Cloud
+if "GOOGLE_API_KEY" in st.secrets:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+else:
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
 # ---------------- LLM ---------------- #
@@ -42,12 +47,13 @@ You are a helpful assistant that answers questions about a YouTube video.
 
 Rules:
 
-* Use ONLY the context below.
-* Reply in the SAME language style as the user.
-* If the user writes in English → reply in English.
-* If the user writes in Hinglish (Hindi words but English letters) → reply in Hinglish using English letters only.
-* DO NOT switch to Hindi script unless the user uses Hindi script.
-* If the user thanks you, politely say you are happy to help.
+- Use ONLY the context below
+- Reply in the SAME language style as the user
+- English → English
+- Hinglish → Hinglish (English letters only)
+- Do NOT switch to Hindi script unless the user uses Hindi script
+- If the user thanks you, politely say you are happy to help
+- If the user asks for code, provide proper code if available in context
 
 Context:
 {context}
@@ -61,9 +67,13 @@ input_variables=["context","question"]
 )
 
 
-# ---------------- Streamlit ---------------- #
+# ---------------- Streamlit UI ---------------- #
 
-st.set_page_config(page_title="YouTube RAG Chatbot", page_icon="▶")
+st.set_page_config(
+    page_title="YouTube RAG Chatbot",
+    page_icon="▶",
+    layout="wide"
+)
 
 st.title("🎥 YouTube RAG Chatbot")
 
@@ -80,7 +90,7 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
 
-# ---------------- Extract ID ---------------- #
+# ---------------- Extract Video ID ---------------- #
 
 def extract_youtube_id(url):
 
@@ -106,38 +116,52 @@ with st.sidebar:
 
             st.session_state.video_id = video_id
 
-            with st.spinner("Fetching transcript..."):
+            try:
 
-                api = YouTubeTranscriptApi()
+                with st.spinner("Fetching transcript..."):
 
-                transcript = api.fetch(
-                    video_id,
-                    languages=['en','hi']
-                )
+                    api = YouTubeTranscriptApi()
 
-                text = " ".join(
-                    chunk.text for chunk in transcript.snippets
-                )
+                    transcript = api.fetch(
+                        video_id,
+                        languages=['en','hi']
+                    )
 
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1500,
-                    chunk_overlap=300
-                )
+                    text = " ".join(
+                        chunk.text for chunk in transcript.snippets
+                    )
 
-                docs = splitter.create_documents([text])
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1500,
+                        chunk_overlap=300
+                    )
 
-                vector_store = FAISS.from_documents(
-                    docs,
-                    embeddings
-                )
+                    docs = splitter.create_documents([text])
 
-                st.session_state.vector_store = vector_store
+                    vector_store = FAISS.from_documents(
+                        docs,
+                        embeddings
+                    )
 
-            st.success("Video Loaded and Indexed!")
+                    st.session_state.vector_store = vector_store
+
+                st.success("Video Loaded and Indexed!")
+
+            except TranscriptsDisabled:
+
+                st.error("Captions are disabled for this video.")
+
+            except NoTranscriptFound:
+
+                st.error("No transcript found for this video.")
+
+            except Exception as e:
+
+                st.error("Error loading transcript.")
 
         else:
 
-            st.error("Invalid URL")
+            st.error("Invalid YouTube URL")
 
     if st.session_state.video_id:
 
@@ -154,7 +178,7 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 
-# ---------------- Chat ---------------- #
+# ---------------- Chat Input ---------------- #
 
 question = st.chat_input("Ask something about the video")
 
@@ -166,12 +190,11 @@ if question:
         st.stop()
 
     st.session_state.messages.append(
-        {"role":"user","content":question}
+        {"role": "user", "content": question}
     )
 
     with st.chat_message("user"):
         st.markdown(question)
-
 
     retriever = st.session_state.vector_store.as_retriever(
         search_kwargs={"k":8}
@@ -183,23 +206,30 @@ if question:
         d.page_content for d in docs
     )
 
-
     final_prompt = prompt.invoke({
-        "context":context,
-        "question":question
+        "context": context,
+        "question": question
     })
-
 
     with st.chat_message("assistant"):
 
         response = ""
+
         placeholder = st.empty()
 
-        for chunk in llm.stream(final_prompt):
+        try:
 
-            response += chunk.content
+            for chunk in llm.stream(final_prompt):
+
+                response += chunk.content
+                placeholder.markdown(response)
+
+        except Exception:
+
+            response = "Sorry, AI service is currently unavailable."
+
             placeholder.markdown(response)
 
     st.session_state.messages.append(
-        {"role":"assistant","content":response}
+        {"role": "assistant", "content": response}
     )
