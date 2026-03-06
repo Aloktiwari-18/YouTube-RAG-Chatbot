@@ -208,6 +208,7 @@ if question:
 
 
     with st.chat_message("assistant"):
+        
 
         response = ""
         placeholder = st.empty()
