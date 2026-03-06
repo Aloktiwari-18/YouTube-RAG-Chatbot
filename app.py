@@ -15,7 +15,11 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 # ---------------- ENV ---------------- #
 
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
 # ---------------- LLM ---------------- #
@@ -41,13 +45,11 @@ template="""
 You are a helpful assistant that answers questions about a YouTube video.
 
 Rules:
+Use ONLY the context below.
 
-* Use ONLY the context below.
-* Reply in the SAME language style as the user.
-* If the user writes in English → reply in English.
-* If the user writes in Hinglish (Hindi words but English letters) → reply in Hinglish using English letters only.
-* DO NOT switch to Hindi script unless the user uses Hindi script.
-* If the user thanks you, politely say you are happy to help.
+Reply in the SAME language style as the user.
+English → English
+Hinglish → Hinglish (English letters)
 
 Context:
 {context}
@@ -55,7 +57,7 @@ Context:
 Question:
 {question}
 
-Give a clear answer.
+Answer clearly.
 """,
 input_variables=["context","question"]
 )
@@ -80,7 +82,7 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
 
-# ---------------- Extract ID ---------------- #
+# ---------------- Extract Video ID ---------------- #
 
 def extract_youtube_id(url):
 
@@ -88,6 +90,23 @@ def extract_youtube_id(url):
     match = re.search(pattern, url)
 
     return match.group(1) if match else None
+
+
+# ---------------- Transcript Loader ---------------- #
+
+@st.cache_data(show_spinner=False)
+def load_transcript(video_id):
+
+    api = YouTubeTranscriptApi()
+
+    transcript = api.fetch(
+        video_id,
+        languages=["en", "hi"]
+    )
+
+    text = " ".join(chunk.text for chunk in transcript.snippets)
+
+    return text
 
 
 # ---------------- Sidebar ---------------- #
@@ -106,34 +125,32 @@ with st.sidebar:
 
             st.session_state.video_id = video_id
 
-            with st.spinner("Fetching transcript..."):
+            try:
 
-                api = YouTubeTranscriptApi()
+                with st.spinner("Fetching transcript..."):
 
-                transcript = api.fetch(
-                    video_id,
-                    languages=['en','hi']
-                )
+                    text = load_transcript(video_id)
 
-                text = " ".join(
-                    chunk.text for chunk in transcript.snippets
-                )
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1500,
+                        chunk_overlap=300
+                    )
 
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1500,
-                    chunk_overlap=300
-                )
+                    docs = splitter.create_documents([text])
 
-                docs = splitter.create_documents([text])
+                    vector_store = FAISS.from_documents(
+                        docs,
+                        embeddings
+                    )
 
-                vector_store = FAISS.from_documents(
-                    docs,
-                    embeddings
-                )
+                    st.session_state.vector_store = vector_store
 
-                st.session_state.vector_store = vector_store
+                st.success("Video Loaded and Indexed!")
 
-            st.success("Video Loaded and Indexed!")
+            except Exception as e:
+
+                st.error("Transcript not available for this video.")
+                st.write(e)
 
         else:
 
