@@ -1,6 +1,7 @@
 import streamlit as st
 import re
 import os
+import time
 from dotenv import load_dotenv
 
 from langchain_community.vectorstores import FAISS
@@ -39,6 +40,7 @@ embeddings = HuggingFaceEmbeddings(
 
 
 # ---------------- Prompt ---------------- #
+
 prompt = PromptTemplate(
 template="""
 You are an intelligent AI assistant that answers questions about a YouTube video using the provided transcript context.
@@ -52,40 +54,6 @@ STRICT RULES:
 
 LANGUAGE RULE:
 Respond in the SAME language as the user's question.
-- English → English
-- Hindi → Hindi
-- Hinglish → Hinglish
-
-RESPONSE STYLE RULES:
-
-If the user asks for a **summary**:
-- Provide a clear concise summary
-- Highlight the main ideas of the video
-- Use bullet points if helpful
-
-If the user asks to **explain something**:
-- Explain clearly and simply
-- Use examples if possible
-- Keep it structured and easy to understand
-
-If the user asks for **detailed explanation**:
-- Provide step-by-step explanation
-- Break concepts into sections
-- Be thorough but still clear
-
-If the user asks for **code**:
-- Provide correct and clean code
-- Add short explanation of the code
-- Use proper formatting
-
-If the user asks for **concept clarification**:
-- Explain the concept in simple terms
-- Add examples where useful
-
-FORMAT RULES:
-- Use headings when needed
-- Use bullet points for lists
-- Keep responses well structured and readable
 
 Context:
 {context}
@@ -102,7 +70,6 @@ input_variables=["context", "question"]
 # ---------------- Streamlit ---------------- #
 
 st.set_page_config(page_title="YouTube RAG Chatbot", page_icon="▶")
-
 st.title("🎥 YouTube RAG Chatbot")
 
 
@@ -121,10 +88,8 @@ if "vector_store" not in st.session_state:
 # ---------------- Extract Video ID ---------------- #
 
 def extract_youtube_id(url):
-
     pattern = r"(?:v=|youtu\.be/|embed/|shorts/)([^&?/]+)"
     match = re.search(pattern, url)
-
     return match.group(1) if match else None
 
 
@@ -135,23 +100,23 @@ def load_transcript(video_id):
 
     api = YouTubeTranscriptApi()
 
-    try:
-        transcript = api.get_transcript(
-            video_id,
-            languages=["en", "hi"],
-            proxies={
-                "http": "http://your-proxy",
-                "https": "https://your-proxy"
-            }
-        )
+    for i in range(3):  # retry logic
+        try:
+            transcript = api.get_transcript(
+                video_id,
+                languages=["en", "hi"]
+            )
 
-        text = " ".join(chunk["text"] for chunk in transcript)
+            text = " ".join(chunk["text"] for chunk in transcript)
 
-    except Exception as e:
-        print("Error fetching transcript:", e)
-        text = ""
+            if text.strip():
+                return text
 
-    return text
+        except Exception as e:
+            print("Retry:", i, "Error:", e)
+            time.sleep(2)
+
+    return ""
 
 
 # ---------------- Sidebar ---------------- #
@@ -176,12 +141,22 @@ with st.sidebar:
 
                     text = load_transcript(video_id)
 
+                    # ✅ FIX 1: Empty transcript check
+                    if not text or len(text.strip()) == 0:
+                        st.error("❌ Transcript not available or blocked by YouTube.")
+                        st.stop()
+
                     splitter = RecursiveCharacterTextSplitter(
                         chunk_size=1500,
                         chunk_overlap=300
                     )
 
                     docs = splitter.create_documents([text])
+
+                    # ✅ FIX 2: Documents check
+                    if not docs or len(docs) == 0:
+                        st.error("❌ No content to process.")
+                        st.stop()
 
                     vector_store = FAISS.from_documents(
                         docs,
@@ -190,19 +165,16 @@ with st.sidebar:
 
                     st.session_state.vector_store = vector_store
 
-                st.success("Video Loaded and Indexed!")
+                st.success("✅ Video Loaded and Indexed!")
 
             except Exception as e:
-
-                st.error("Transcript not available for this video.")
+                st.error("❌ Something went wrong.")
                 st.write(e)
 
         else:
-
             st.error("Invalid URL")
 
     if st.session_state.video_id:
-
         st.video(
             f"https://www.youtube.com/watch?v={st.session_state.video_id}"
         )
@@ -211,7 +183,6 @@ with st.sidebar:
 # ---------------- Chat History ---------------- #
 
 for msg in st.session_state.messages:
-
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
@@ -223,7 +194,6 @@ question = st.chat_input("Ask something about the video")
 if question:
 
     if st.session_state.vector_store is None:
-
         st.error("Please load a video first.")
         st.stop()
 
@@ -245,7 +215,6 @@ if question:
         d.page_content for d in docs
     )
 
-
     final_prompt = prompt.invoke({
         "context":context,
         "question":question
@@ -253,13 +222,11 @@ if question:
 
 
     with st.chat_message("assistant"):
-        
 
         response = ""
         placeholder = st.empty()
 
         for chunk in llm.stream(final_prompt):
-
             response += chunk.content
             placeholder.markdown(response)
 
