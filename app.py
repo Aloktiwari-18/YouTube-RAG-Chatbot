@@ -135,12 +135,21 @@ def load_transcript(video_id):
 
     api = YouTubeTranscriptApi()
 
-    transcript = api.fetch(
-        video_id,
-        languages=["en", "hi"]
-    )
+    try:
+        transcript = api.get_transcript(
+            video_id,
+            languages=["en", "hi"],
+            proxies={
+                "http": "http://your-proxy",
+                "https": "https://your-proxy"
+            }
+        )
 
-    text = " ".join(chunk.text for chunk in transcript.snippets)
+        text = " ".join(chunk["text"] for chunk in transcript)
+
+    except Exception as e:
+        print("Error fetching transcript:", e)
+        text = ""
 
     return text
 
