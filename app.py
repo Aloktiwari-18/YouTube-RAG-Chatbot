@@ -179,7 +179,6 @@ with st.sidebar:
             f"https://www.youtube.com/watch?v={st.session_state.video_id}"
         )
 
-
 # ---------------- Chat History ---------------- #
 
 for msg in st.session_state.messages:
